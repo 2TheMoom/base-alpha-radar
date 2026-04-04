@@ -3,17 +3,12 @@ import time
 from web3 import Web3
 from dotenv import load_dotenv
 
-# Load environment variables from .env
+# Load environment variables
 load_dotenv()
 
-# Get RPC URL from .env file
 RPC_URL = os.getenv("BASE_RPC_URL")
 
-if not RPC_URL:
-    print("❌ BASE_RPC_URL not found in .env file")
-    exit()
-
-# Connect to Base network
+# Connect to Base
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
 if not w3.is_connected():
@@ -22,46 +17,30 @@ if not w3.is_connected():
 
 print("✅ Connected to Base")
 
-# Function to scan a block
-def scan_block(block_number):
-    try:
-        block = w3.eth.get_block(block_number, full_transactions=True)
+latest_block = w3.eth.block_number
+print(f"Starting from block: {latest_block}")
 
-        print(f"\n🔎 Scanning block {block_number}")
-        print(f"Transactions in block: {len(block.transactions)}")
+while True:
+    try:
+        block = w3.eth.get_block(latest_block, full_transactions=True)
+
+        print(f"\n🔎 Scanning Block: {latest_block}")
 
         for tx in block.transactions:
 
-            # Detect contract deployment
-            if tx.to is None:
-                print("🚀 Possible contract deployment:", tx.hash.hex())
+            # Contract creation transaction
+            if tx["to"] is None:
+
+                contract_address = w3.eth.get_transaction_receipt(tx["hash"]).contractAddress
+                deployer = tx["from"]
+
+                print("🚀 New Contract Detected")
+                print(f"Deployer: {deployer}")
+                print(f"Contract: {contract_address}")
+                print("-" * 40)
+
+        latest_block += 1
 
     except Exception as e:
-        print("Block scan error:", e)
-
-
-# Main scanner loop
-def start_scanner():
-    latest_block = w3.eth.block_number
-    print("Starting scanner from block:", latest_block)
-
-    while True:
-        try:
-            current_block = w3.eth.block_number
-
-            if current_block >= latest_block:
-
-                for block_number in range(latest_block, current_block + 1):
-                    scan_block(block_number)
-
-                latest_block = current_block + 1
-
-            time.sleep(5)
-
-        except Exception as e:
-            print("Scanner error:", e)
-            time.sleep(5)
-
-
-# Start scanner
-start_scanner()
+        print("Waiting for next block...")
+        time.sleep(2)
