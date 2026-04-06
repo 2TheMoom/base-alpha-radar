@@ -5,15 +5,9 @@ from datetime import datetime, timezone
 from web3 import Web3
 from dotenv import load_dotenv
 
-# -----------------------------
-# LOAD ENV
-# -----------------------------
 load_dotenv()
 RPC_URL = os.getenv("BASE_RPC_URL")
 
-# -----------------------------
-# CONNECT WEB3
-# -----------------------------
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
 if not w3.is_connected():
@@ -22,15 +16,9 @@ if not w3.is_connected():
 
 print("Connected to Base RPC")
 
-# -----------------------------
-# DATABASE
-# -----------------------------
 conn = sqlite3.connect("contracts.db")
 cursor = conn.cursor()
 
-# -----------------------------
-# ERC20 ABI
-# -----------------------------
 ERC20_ABI = [
     {
         "constant": True,
@@ -55,15 +43,11 @@ ERC20_ABI = [
     },
 ]
 
-# ERC20 Transfer Event Signature
 TRANSFER_TOPIC = w3.keccak(text="Transfer(address,address,uint256)").hex()
+APPROVAL_TOPIC = w3.keccak(text="Approval(address,address,uint256)").hex()
 
-# Zero address used for mint detection
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
-# -----------------------------
-# LAST BLOCK TRACKING
-# -----------------------------
 LAST_BLOCK_FILE = "last_block.txt"
 
 
@@ -83,9 +67,6 @@ current_block = get_last_block()
 
 print(f"Starting scan from block {current_block}")
 
-# -----------------------------
-# MAIN LOOP
-# -----------------------------
 while True:
 
     try:
@@ -103,7 +84,7 @@ while True:
             )
 
             # -----------------------------
-            # CHECK CONTRACT DEPLOYMENTS
+            # CONTRACT DEPLOYMENTS
             # -----------------------------
             for tx in block.transactions:
 
@@ -162,7 +143,7 @@ while True:
                     pass
 
             # -----------------------------
-            # CHECK ERC20 MINT EVENTS
+            # MINT EVENTS
             # -----------------------------
             logs = w3.eth.get_logs({
                 "fromBlock": current_block,
@@ -217,6 +198,62 @@ while True:
                         )
 
                         conn.commit()
+
+                except Exception:
+                    pass
+
+            # -----------------------------
+            # APPROVAL EVENTS (NEW UPGRADE)
+            # -----------------------------
+            approval_logs = w3.eth.get_logs({
+                "fromBlock": current_block,
+                "toBlock": current_block,
+                "topics": [APPROVAL_TOPIC]
+            })
+
+            for log in approval_logs:
+
+                try:
+
+                    token_address = log["address"]
+
+                    token = w3.eth.contract(
+                        address=token_address,
+                        abi=ERC20_ABI
+                    )
+
+                    try:
+                        name = token.functions.name().call()
+                        symbol = token.functions.symbol().call()
+                        total_supply = token.functions.totalSupply().call()
+                    except Exception:
+                        continue
+
+                    print("\n⚡ Approval Event Detected")
+                    print(f"Name: {name}")
+                    print(f"Symbol: {symbol}")
+                    print(f"Contract: {token_address}")
+                    print(f"Supply: {total_supply}")
+                    print(f"Block: {current_block}")
+                    print(f"Time: {block_time}")
+                    print("---------------------")
+
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO contracts
+                        (contract_address, name, symbol, total_supply, block_number)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            token_address,
+                            name,
+                            symbol,
+                            total_supply,
+                            current_block,
+                        ),
+                    )
+
+                    conn.commit()
 
                 except Exception:
                     pass
