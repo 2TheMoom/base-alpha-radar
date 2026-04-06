@@ -1,123 +1,233 @@
 import os
+import time
 import sqlite3
+from datetime import datetime, timezone
 from web3 import Web3
 from dotenv import load_dotenv
 
+# -----------------------------
+# LOAD ENV
+# -----------------------------
 load_dotenv()
+RPC_URL = os.getenv("BASE_RPC_URL")
 
-BASE_RPC = os.getenv("BASE_RPC")
-
-w3 = Web3(Web3.HTTPProvider(BASE_RPC))
+# -----------------------------
+# CONNECT WEB3
+# -----------------------------
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
 if not w3.is_connected():
-    raise Exception("Failed to connect to Base RPC")
+    print("Failed to connect to RPC")
+    exit()
 
 print("Connected to Base RPC")
 
-# Connect to database
+# -----------------------------
+# DATABASE
+# -----------------------------
 conn = sqlite3.connect("contracts.db")
 cursor = conn.cursor()
 
-# Create contracts table if it doesn't exist
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS contracts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contract_address TEXT UNIQUE,
-    name TEXT,
-    symbol TEXT,
-    supply TEXT,
-    deployer TEXT,
-    block INTEGER,
-    is_token INTEGER
-)
-""")
+# -----------------------------
+# ERC20 ABI
+# -----------------------------
+ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"type": "string"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"type": "string"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "totalSupply",
+        "outputs": [{"type": "uint256"}],
+        "type": "function",
+    },
+]
 
-conn.commit()
+# ERC20 Transfer Event Signature
+TRANSFER_TOPIC = w3.keccak(text="Transfer(address,address,uint256)").hex()
+
+# Zero address used for mint detection
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+# -----------------------------
+# LAST BLOCK TRACKING
+# -----------------------------
+LAST_BLOCK_FILE = "last_block.txt"
 
 
-def get_last_scanned_block():
-    try:
-        with open("last_block.txt", "r") as f:
+def get_last_block():
+    if os.path.exists(LAST_BLOCK_FILE):
+        with open(LAST_BLOCK_FILE, "r") as f:
             return int(f.read().strip())
-    except:
-        latest = w3.eth.block_number
-        return latest - 1000
+    return w3.eth.block_number
 
 
-def save_last_block(block_number):
-    with open("last_block.txt", "w") as f:
-        f.write(str(block_number))
+def save_last_block(block):
+    with open(LAST_BLOCK_FILE, "w") as f:
+        f.write(str(block))
 
 
-def get_token_info(address):
+current_block = get_last_block()
 
-    erc20_abi = [
-        {"constant": True, "inputs": [], "name": "name", "outputs": [{"name": "", "type": "string"}], "type": "function"},
-        {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "type": "function"},
-        {"constant": True, "inputs": [], "name": "totalSupply", "outputs": [{"name": "", "type": "uint256"}], "type": "function"}
-    ]
+print(f"Starting scan from block {current_block}")
+
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+while True:
 
     try:
-        contract = w3.eth.contract(address=address, abi=erc20_abi)
 
-        name = contract.functions.name().call()
-        symbol = contract.functions.symbol().call()
-        supply = contract.functions.totalSupply().call()
+        latest_block = w3.eth.block_number
 
-        return name, symbol, supply
+        while current_block <= latest_block:
 
-    except:
-        return None
+            print(f"Scanning block {current_block}")
 
+            block = w3.eth.get_block(current_block, full_transactions=True)
 
-start_block = get_last_scanned_block()
-latest_block = w3.eth.block_number
+            block_time = datetime.fromtimestamp(
+                block.timestamp, timezone.utc
+            )
 
-print(f"Starting scan from block {start_block}")
-print(f"Latest block {latest_block}")
-
-for block_number in range(start_block, latest_block + 1):
-
-    block = w3.eth.get_block(block_number, full_transactions=True)
-
-    for tx in block.transactions:
-
-        if tx.to is None:
-
-            receipt = w3.eth.get_transaction_receipt(tx.hash)
-
-            contract_address = receipt.contractAddress
-            deployer = tx["from"]
-
-            token = get_token_info(contract_address)
-
-            if token:
-
-                name, symbol, supply = token
-
-                print(f"Token found: {name} ({symbol})")
+            # -----------------------------
+            # CHECK CONTRACT DEPLOYMENTS
+            # -----------------------------
+            for tx in block.transactions:
 
                 try:
-                    cursor.execute("""
-                    INSERT INTO contracts
-                    (contract_address, name, symbol, supply, deployer, block, is_token)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        contract_address,
-                        name,
-                        symbol,
-                        str(supply),
-                        deployer,
-                        block_number,
-                        1
-                    ))
 
-                    conn.commit()
-                    print("Saved to database")
+                    receipt = w3.eth.get_transaction_receipt(tx.hash)
 
-                except sqlite3.IntegrityError:
+                    contract_address = receipt.contractAddress
+
+                    if contract_address:
+
+                        try:
+
+                            token = w3.eth.contract(
+                                address=contract_address,
+                                abi=ERC20_ABI
+                            )
+
+                            name = token.functions.name().call()
+                            symbol = token.functions.symbol().call()
+                            total_supply = token.functions.totalSupply().call()
+
+                            deployer = tx["from"]
+
+                            print("\n🚀 New Token (Deployment)")
+                            print(f"Name: {name}")
+                            print(f"Symbol: {symbol}")
+                            print(f"Contract: {contract_address}")
+                            print(f"Deployer: {deployer}")
+                            print(f"Supply: {total_supply}")
+                            print(f"Block: {current_block}")
+                            print(f"Time: {block_time}")
+                            print("---------------------")
+
+                            cursor.execute(
+                                """
+                                INSERT OR IGNORE INTO contracts
+                                (contract_address, name, symbol, total_supply, block_number)
+                                VALUES (?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    contract_address,
+                                    name,
+                                    symbol,
+                                    total_supply,
+                                    current_block,
+                                ),
+                            )
+
+                            conn.commit()
+
+                        except Exception:
+                            pass
+
+                except Exception:
                     pass
 
-    save_last_block(block_number)
+            # -----------------------------
+            # CHECK ERC20 MINT EVENTS
+            # -----------------------------
+            logs = w3.eth.get_logs({
+                "fromBlock": current_block,
+                "toBlock": current_block,
+                "topics": [TRANSFER_TOPIC]
+            })
 
-print("Scan complete")
+            for log in logs:
+
+                try:
+
+                    from_address = "0x" + log["topics"][1].hex()[-40:]
+
+                    if from_address.lower() == ZERO_ADDRESS.lower():
+
+                        token_address = log["address"]
+
+                        token = w3.eth.contract(
+                            address=token_address,
+                            abi=ERC20_ABI
+                        )
+
+                        try:
+                            name = token.functions.name().call()
+                            symbol = token.functions.symbol().call()
+                            total_supply = token.functions.totalSupply().call()
+                        except Exception:
+                            continue
+
+                        print("\n🔥 Token Mint Detected")
+                        print(f"Name: {name}")
+                        print(f"Symbol: {symbol}")
+                        print(f"Contract: {token_address}")
+                        print(f"Supply: {total_supply}")
+                        print(f"Block: {current_block}")
+                        print(f"Time: {block_time}")
+                        print("---------------------")
+
+                        cursor.execute(
+                            """
+                            INSERT OR IGNORE INTO contracts
+                            (contract_address, name, symbol, total_supply, block_number)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                token_address,
+                                name,
+                                symbol,
+                                total_supply,
+                                current_block,
+                            ),
+                        )
+
+                        conn.commit()
+
+                except Exception:
+                    pass
+
+            save_last_block(current_block)
+
+            current_block += 1
+
+        time.sleep(3)
+
+    except Exception as e:
+
+        print("Scanner error:", e)
+        time.sleep(5)
