@@ -1,7 +1,6 @@
 import time
 import os
 from web3 import Web3
-from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,10 +24,10 @@ DEX_FACTORIES = [
 ]
 
 ERC20_ABI = [
-    {"constant":True,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"totalSupply","outputs":[{"name":"","type":"uint256"}],"type":"function"}
+    {"constant":True,"inputs":[],"name":"name","outputs":[{"type":"string"}],"type":"function"},
+    {"constant":True,"inputs":[],"name":"symbol","outputs":[{"type":"string"}],"type":"function"},
+    {"constant":True,"inputs":[],"name":"decimals","outputs":[{"type":"uint8"}],"type":"function"},
+    {"constant":True,"inputs":[],"name":"totalSupply","outputs":[{"type":"uint256"}],"type":"function"},
 ]
 
 
@@ -39,7 +38,6 @@ def get_token_info(contract):
         token = w3.eth.contract(address=contract, abi=ERC20_ABI)
 
         decimals = token.functions.decimals().call()
-
         name = token.functions.name().call()
         symbol = token.functions.symbol().call()
         supply = token.functions.totalSupply().call()
@@ -55,122 +53,108 @@ def get_token_info(contract):
 
 def detect_token_mint(log):
 
-    if log["topics"][0].hex() == TRANSFER_SIG:
+    topics = log["topics"]
 
-        from_addr = "0x" + log["topics"][1].hex()[-40:]
-        to_addr = "0x" + log["topics"][2].hex()[-40:]
+    if topics[0].hex() != TRANSFER_SIG:
+        return
 
-        if from_addr.lower() == "0x0000000000000000000000000000000000000000":
+    from_addr = "0x" + topics[1].hex()[-40:]
+    to_addr = "0x" + topics[2].hex()[-40:]
 
-            contract = Web3.to_checksum_address(log["address"])
+    if from_addr.lower() != "0x0000000000000000000000000000000000000000":
+        return
 
-            token_info = get_token_info(contract)
+    contract = Web3.to_checksum_address(log["address"])
 
-            if not token_info:
-                return
+    token_info = get_token_info(contract)
 
-            name, symbol, supply = token_info
+    if not token_info:
+        return
 
-            amount = int(log["data"].hex(), 16) if log["data"] else 0
+    name, symbol, supply = token_info
 
-            print("\n🔥 Token Mint Detected")
-            print("Name:", name)
-            print("Symbol:", symbol)
-            print("Mint Amount:", amount)
-            print("Total Supply:", supply)
-            print("Contract:", contract)
-            print("Minted To:", Web3.to_checksum_address(to_addr))
+    amount = int(log["data"].hex(), 16) if log["data"] else 0
+
+    print("\n🔥 Token Mint Detected")
+    print("Name:", name)
+    print("Symbol:", symbol)
+    print("Mint Amount:", amount)
+    print("Total Supply:", supply)
+    print("Contract:", contract)
+    print("Minted To:", Web3.to_checksum_address(to_addr))
 
 
 def detect_pair_creation(log):
 
-    if log["topics"][0].hex() == PAIR_CREATED_SIG:
+    topics = log["topics"]
 
-        factory = log["address"]
+    if topics[0].hex() != PAIR_CREATED_SIG:
+        return
 
-        if factory in DEX_FACTORIES:
+    factory = log["address"]
 
-            token0 = Web3.to_checksum_address("0x" + log["topics"][1].hex()[-40:])
-            token1 = Web3.to_checksum_address("0x" + log["topics"][2].hex()[-40:])
+    if factory not in DEX_FACTORIES:
+        return
 
-            print("\n💧 Liquidity Pair Created")
-            print("Factory:", factory)
-            print("Token0:", token0)
-            print("Token1:", token1)
+    token0 = Web3.to_checksum_address("0x" + topics[1].hex()[-40:])
+    token1 = Web3.to_checksum_address("0x" + topics[2].hex()[-40:])
 
-
-def detect_contract_deployment(tx):
-
-    if tx["to"] is None:
-
-        receipt = w3.eth.get_transaction_receipt(tx["hash"])
-
-        contract = receipt["contractAddress"]
-
-        if not contract:
-            return
-
-        contract = Web3.to_checksum_address(contract)
-
-        token_info = get_token_info(contract)
-
-        if not token_info:
-            return
-
-        name, symbol, supply = token_info
-
-        print("\n🚀 Token Deployed")
-        print("Name:", name)
-        print("Symbol:", symbol)
-        print("Total Supply:", supply)
-        print("Contract:", contract)
-        print("Deployer:", tx["from"])
+    print("\n💧 Liquidity Pair Created")
+    print("Factory:", factory)
+    print("Token0:", token0)
+    print("Token1:", token1)
 
 
-def scan_block(block_number):
+def scan_logs(start, end):
 
-    block = w3.eth.get_block(block_number, full_transactions=True)
+    try:
 
-    block_time = datetime.fromtimestamp(block.timestamp)
+        logs = w3.eth.get_logs({
+            "fromBlock": start,
+            "toBlock": end,
+            "topics": [[TRANSFER_SIG, PAIR_CREATED_SIG]]
+        })
 
-    print(f"\nScanning block {block_number} | {block_time}")
-
-    for tx in block.transactions:
-
-        detect_contract_deployment(tx)
-
-        receipt = w3.eth.get_transaction_receipt(tx.hash)
-
-        for log in receipt.logs:
+        for log in logs:
 
             detect_token_mint(log)
-
             detect_pair_creation(log)
+
+    except Exception as e:
+
+        print("⚠ RPC limit hit, retrying smaller range...")
+        time.sleep(1)
+
+
+def scan_block_range(start, end):
+
+    print(f"\n⚡ Scanning blocks {start} → {end}")
+
+    scan_logs(start, end)
 
 
 def main():
 
-    latest_block = w3.eth.block_number
-
-    start_block = latest_block - 20
-
-    print(f"Starting near latest block: {start_block}")
-
-    current_block = start_block
+    LIVE_WINDOW = 40
+    BATCH_SIZE = 5
 
     while True:
 
         latest_block = w3.eth.block_number
 
-        if current_block <= latest_block:
+        start_block = latest_block - LIVE_WINDOW
 
-            scan_block(current_block)
+        current = start_block
 
-            current_block += 1
+        while current <= latest_block:
 
-        else:
+            end = min(current + BATCH_SIZE, latest_block)
 
-            time.sleep(2)
+            scan_block_range(current, end)
+
+            current = end + 1
+
+        time.sleep(2)
 
 
 if __name__ == "__main__":
