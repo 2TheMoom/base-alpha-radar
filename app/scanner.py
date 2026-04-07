@@ -1,160 +1,188 @@
 import time
-import os
 from web3 import Web3
-from dotenv import load_dotenv
+from datetime import datetime
 
-load_dotenv()
+RPC_URL = "https://mainnet.base.org"
 
-BASE_RPC = os.getenv("BASE_RPC")
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
-w3 = Web3(Web3.HTTPProvider(BASE_RPC))
-
-if not w3.is_connected():
-    print("❌ Failed to connect to Base RPC")
+if w3.is_connected():
+    print("✅ Connected to Base RPC")
+else:
+    print("❌ RPC connection failed")
     exit()
 
-print("✅ Connected to Base RPC")
 
-TRANSFER_SIG = w3.keccak(text="Transfer(address,address,uint256)").hex()
-PAIR_CREATED_SIG = w3.keccak(text="PairCreated(address,address,address,uint256)").hex()
-
-DEX_FACTORIES = [
-    Web3.to_checksum_address("0x8909Dc15e40173fF4699343b6eb8132c65e18eC6"),
-    Web3.to_checksum_address("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),
-]
-
-ERC20_ABI = [
-    {"constant":True,"inputs":[],"name":"name","outputs":[{"type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"symbol","outputs":[{"type":"string"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"decimals","outputs":[{"type":"uint8"}],"type":"function"},
-    {"constant":True,"inputs":[],"name":"totalSupply","outputs":[{"type":"uint256"}],"type":"function"},
-]
+TRANSFER_TOPIC = w3.keccak(text="Transfer(address,address,uint256)").hex()
+LIQUIDITY_TOPIC = w3.keccak(text="Mint(address,uint256,uint256)").hex()
+NFT_APPROVAL_TOPIC = w3.keccak(text="ApprovalForAll(address,address,bool)").hex()
 
 
-def get_token_info(contract):
+def get_token_metadata(token):
+
+    abi = [
+        {
+            "name": "name",
+            "outputs": [{"type": "string"}],
+            "inputs": [],
+            "stateMutability": "view",
+            "type": "function",
+        },
+        {
+            "name": "symbol",
+            "outputs": [{"type": "string"}],
+            "inputs": [],
+            "stateMutability": "view",
+            "type": "function",
+        },
+        {
+            "name": "totalSupply",
+            "outputs": [{"type": "uint256"}],
+            "inputs": [],
+            "stateMutability": "view",
+            "type": "function",
+        },
+    ]
 
     try:
 
-        token = w3.eth.contract(address=contract, abi=ERC20_ABI)
+        contract = w3.eth.contract(address=token, abi=abi)
 
-        decimals = token.functions.decimals().call()
-        name = token.functions.name().call()
-        symbol = token.functions.symbol().call()
-        supply = token.functions.totalSupply().call()
-
-        supply = supply / (10 ** decimals)
+        name = contract.functions.name().call()
+        symbol = contract.functions.symbol().call()
+        supply = contract.functions.totalSupply().call()
 
         return name, symbol, supply
 
     except:
 
-        return None
+        return "Unknown", "Unknown", 0
 
 
-def detect_token_mint(log):
+def detect_token_mint(log, block_time):
 
-    topics = log["topics"]
-
-    if topics[0].hex() != TRANSFER_SIG:
+    if log["topics"][0].hex() != TRANSFER_TOPIC:
         return
 
-    from_addr = "0x" + topics[1].hex()[-40:]
-    to_addr = "0x" + topics[2].hex()[-40:]
+    if len(log["topics"]) < 3:
+        return
+
+    from_addr = "0x" + log["topics"][1].hex()[-40:]
 
     if from_addr.lower() != "0x0000000000000000000000000000000000000000":
         return
 
-    contract = Web3.to_checksum_address(log["address"])
+    token = log["address"]
 
-    token_info = get_token_info(contract)
+    data = log["data"]
 
-    if not token_info:
+    if data in (b"", "0x", None):
         return
 
-    name, symbol, supply = token_info
+    try:
+        amount = int(data.hex(), 16) if isinstance(data, bytes) else int(data, 16)
+    except:
+        return
 
-    amount = int(log["data"].hex(), 16) if log["data"] else 0
+    name, symbol, supply = get_token_metadata(token)
 
     print("\n🔥 Token Mint Detected")
+    print("Time:", block_time)
     print("Name:", name)
     print("Symbol:", symbol)
     print("Mint Amount:", amount)
     print("Total Supply:", supply)
-    print("Contract:", contract)
-    print("Minted To:", Web3.to_checksum_address(to_addr))
+    print("Contract:", token)
 
 
-def detect_pair_creation(log):
+def detect_liquidity(log, block_time):
 
-    topics = log["topics"]
+    if log["topics"][0].hex() != LIQUIDITY_TOPIC:
+        return False
 
-    if topics[0].hex() != PAIR_CREATED_SIG:
+    pair = log["address"]
+
+    print("\n💧 Liquidity Added")
+    print("Time:", block_time)
+    print("Pool:", pair)
+
+    return True
+
+
+def detect_nft_approval(log, block_time):
+
+    if log["topics"][0].hex() != NFT_APPROVAL_TOPIC:
         return
 
-    factory = log["address"]
+    owner = "0x" + log["topics"][1].hex()[-40:]
+    operator = "0x" + log["topics"][2].hex()[-40:]
 
-    if factory not in DEX_FACTORIES:
-        return
-
-    token0 = Web3.to_checksum_address("0x" + topics[1].hex()[-40:])
-    token1 = Web3.to_checksum_address("0x" + topics[2].hex()[-40:])
-
-    print("\n💧 Liquidity Pair Created")
-    print("Factory:", factory)
-    print("Token0:", token0)
-    print("Token1:", token1)
+    print("\n🟣 Contract Approval Detected")
+    print("Time:", block_time)
+    print("Owner:", owner)
+    print("Operator:", operator)
+    print("Contract:", log["address"])
 
 
-def scan_logs(start, end):
+def scan_block(block_number):
+
+    block = w3.eth.get_block(block_number)
+
+    timestamp = datetime.utcfromtimestamp(block["timestamp"])
+
+    print(f"\nScanning block {block_number} | {timestamp}")
 
     try:
 
-        logs = w3.eth.get_logs({
-            "fromBlock": start,
-            "toBlock": end,
-            "topics": [[TRANSFER_SIG, PAIR_CREATED_SIG]]
-        })
-
-        for log in logs:
-
-            detect_token_mint(log)
-            detect_pair_creation(log)
+        logs = w3.eth.get_logs(
+            {
+                "fromBlock": block_number,
+                "toBlock": block_number,
+            }
+        )
 
     except Exception as e:
 
-        print("⚠ RPC limit hit, retrying smaller range...")
-        time.sleep(1)
+        print("Log fetch error:", e)
+        return
 
+    liquidity_count = 0
 
-def scan_block_range(start, end):
+    for log in logs:
 
-    print(f"\n⚡ Scanning blocks {start} → {end}")
+        detect_token_mint(log, timestamp)
 
-    scan_logs(start, end)
+        if detect_liquidity(log, timestamp):
+            liquidity_count += 1
+
+        detect_nft_approval(log, timestamp)
+
+    print("\n📊 Liquidity Summary")
+    print("Block:", block_number)
+    print("Liquidity Events:", liquidity_count)
 
 
 def main():
 
-    LIVE_WINDOW = 40
-    BATCH_SIZE = 5
+    latest_block = w3.eth.block_number
+
+    current_block = latest_block - 1
+
+    print("Starting near latest block:", current_block)
 
     while True:
 
         latest_block = w3.eth.block_number
 
-        start_block = latest_block - LIVE_WINDOW
+        if current_block <= latest_block:
 
-        current = start_block
+            scan_block(current_block)
 
-        while current <= latest_block:
+            current_block += 1
 
-            end = min(current + BATCH_SIZE, latest_block)
+        else:
 
-            scan_block_range(current, end)
-
-            current = end + 1
-
-        time.sleep(2)
+            time.sleep(1)
 
 
 if __name__ == "__main__":
