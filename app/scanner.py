@@ -6,172 +6,214 @@ RPC_URL = "https://mainnet.base.org"
 
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
-if w3.is_connected():
-    print("✅ Connected to Base RPC")
-else:
-    print("❌ RPC connection failed")
-    exit()
+print("Connected to Base RPC")
 
 TRANSFER_TOPIC = w3.keccak(text="Transfer(address,address,uint256)").hex()
-LIQUIDITY_TOPIC = w3.keccak(text="Mint(address,uint256,uint256)").hex()
+
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+DEX_ROUTERS = {
+    "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86": "Uniswap",
+    "0xcF77a3Ba9A5CA399B7c97c74d54e5b1b9E36FfC9": "Aerodrome"
+}
+
+
+def safe_rpc(fn):
+    try:
+        return fn()
+    except:
+        return None
 
 
 def get_token_metadata(address):
 
     abi = [
-        {"name":"name","outputs":[{"type":"string"}],"inputs":[],"stateMutability":"view","type":"function"},
-        {"name":"symbol","outputs":[{"type":"string"}],"inputs":[],"stateMutability":"view","type":"function"},
-        {"name":"totalSupply","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"}
+        {"constant":True,"inputs":[],"name":"name","outputs":[{"type":"string"}],"type":"function"},
+        {"constant":True,"inputs":[],"name":"symbol","outputs":[{"type":"string"}],"type":"function"},
+        {"constant":True,"inputs":[],"name":"totalSupply","outputs":[{"type":"uint256"}],"type":"function"}
     ]
 
     try:
 
         contract = w3.eth.contract(address=address, abi=abi)
 
-        name = contract.functions.name().call()
-        symbol = contract.functions.symbol().call()
-        supply = contract.functions.totalSupply().call()
+        name = safe_rpc(lambda: contract.functions.name().call())
+        symbol = safe_rpc(lambda: contract.functions.symbol().call())
+        supply = safe_rpc(lambda: contract.functions.totalSupply().call())
 
-        return name, symbol, supply
+        return name or "Unknown", symbol or "Unknown", supply or 0
 
     except:
+        return "Unknown","Unknown",0
 
-        return "Unknown", "Unknown", 0
+
+def detect_token_mint(log, timestamp):
+
+    if "topics" not in log:
+        return False
+
+    if len(log["topics"]) == 0:
+        return False
+
+    if log["topics"][0].hex() != TRANSFER_TOPIC:
+        return False
+
+    if len(log["topics"]) < 3:
+        return False
+
+    from_addr = "0x" + log["topics"][1].hex()[-40:]
+
+    if from_addr.lower() != ZERO_ADDRESS:
+        return False
+
+    token = log["address"]
+
+    name, symbol, supply = get_token_metadata(token)
+
+    # ---------- NFT MINT ----------
+    if len(log["topics"]) == 4:
+
+        try:
+            token_id = int(log["topics"][3].hex(), 16)
+        except:
+            token_id = 0
+
+        print("\n🖼 NFT Mint Detected")
+        print("Time:", timestamp)
+        print("Name:", name)
+        print("Symbol:", symbol)
+        print("Token ID:", token_id)
+        print("Contract:", token)
+
+        return True
+
+
+    # ---------- ERC20 MINT ----------
+    amount = 0
+
+    try:
+        if log["data"] != "0x":
+            amount = int(log["data"], 16)
+    except:
+        amount = 0
+
+    print("\n🔥 Token Mint Detected")
+    print("Time:", timestamp)
+    print("Name:", name)
+    print("Symbol:", symbol)
+    print("Mint Amount:", amount)
+    print("Total Supply:", supply)
+    print("Contract:", token)
+
+    return True
+
+
+def detect_liquidity(tx, timestamp):
+
+    if tx["to"] is None:
+        return False
+
+    if tx["to"].lower() not in [x.lower() for x in DEX_ROUTERS]:
+        return False
+
+    dex = DEX_ROUTERS[tx["to"]]
+
+    print("\n💧 Liquidity Event")
+    print("Time:", timestamp)
+    print("DEX:", dex)
+    print("Tx:", tx["hash"].hex())
+
+    return True
+
+
+def detect_contract_deploy(receipt, timestamp):
+
+    if receipt["contractAddress"] is None:
+        return False
+
+    contract = receipt["contractAddress"]
+
+    name, symbol, supply = get_token_metadata(contract)
+
+    if name == "Unknown" and symbol == "Unknown":
+        return False
+
+    print("\n🚀 Token Deployed")
+    print("Time:", timestamp)
+    print("Name:", name)
+    print("Symbol:", symbol)
+    print("Total Supply:", supply)
+    print("Contract:", contract)
+
+    return True
 
 
 def scan_block(block_number):
 
-    block = w3.eth.get_block(block_number, full_transactions=True)
+    block = safe_rpc(lambda: w3.eth.get_block(block_number, full_transactions=True))
+
+    if block is None:
+        return
 
     timestamp = datetime.utcfromtimestamp(block["timestamp"])
 
     print(f"\nScanning block {block_number} | {timestamp}")
 
-    token_mints = 0
-    token_deploys = 0
-    liquidity_events = 0
-    nft_deploys = 0
+    mint_count = 0
+    deploy_count = 0
+    liquidity_count = 0
 
-    try:
+    for tx in block["transactions"]:
 
-        logs = w3.eth.get_logs({
-            "fromBlock": block_number,
-            "toBlock": block_number
-        })
+        receipt = safe_rpc(lambda: w3.eth.get_transaction_receipt(tx["hash"]))
 
-    except Exception as e:
-
-        print("Log error:", e)
-        logs = []
-
-    for log in logs:
-
-        if not log["topics"]:
+        if receipt is None:
             continue
 
-        topic = log["topics"][0].hex()
+        if detect_contract_deploy(receipt, timestamp):
+            deploy_count += 1
 
-        # TOKEN MINT
-        if topic == TRANSFER_TOPIC:
+        if detect_liquidity(tx, timestamp):
+            liquidity_count += 1
 
-            if len(log["topics"]) < 3:
-                continue
-
-            from_addr = "0x" + log["topics"][1].hex()[-40:]
-
-            if from_addr.lower() != "0x0000000000000000000000000000000000000000":
-                continue
-
-            data = log["data"]
-
-            if data in (b"", "0x", None):
-                continue
+        for log in receipt["logs"]:
 
             try:
-                amount = int(data.hex(),16) if isinstance(data,bytes) else int(data,16)
+
+                if detect_token_mint(log, timestamp):
+                    mint_count += 1
+
             except:
                 continue
 
-            token = log["address"]
-
-            name,symbol,supply = get_token_metadata(token)
-
-            token_mints += 1
-
-            print("\n🔥 Token Mint Detected")
-            print("Name:",name)
-            print("Symbol:",symbol)
-            print("Mint Amount:",amount)
-            print("Total Supply:",supply)
-            print("Contract:",token)
-
-        # LIQUIDITY EVENT
-        if topic == LIQUIDITY_TOPIC:
-
-            liquidity_events += 1
-
-            print("\n💧 Liquidity Added")
-            print("Pool:",log["address"])
-
-    # TOKEN / NFT DEPLOYMENTS
-    for tx in block["transactions"]:
-
-        receipt = w3.eth.get_transaction_receipt(tx["hash"])
-
-        if receipt.contractAddress:
-
-            contract = receipt.contractAddress
-
-            name,symbol,supply = get_token_metadata(contract)
-
-            if symbol == "Unknown":
-
-                nft_deploys += 1
-
-                print("\n🖼 NFT Deployed")
-                print("Name:",name)
-                print("Total Supply:",supply)
-                print("Contract:",contract)
-
-            else:
-
-                token_deploys += 1
-
-                print("\n🚀 Token Deployed")
-                print("Name:",name)
-                print("Symbol:",symbol)
-                print("Total Supply:",supply)
-                print("Contract:",contract)
-
     print("\n📊 Block Summary")
-    print("Block:",block_number)
-    print("Token Minted:",token_mints)
-    print("Token Deployed:",token_deploys)
-    print("Liquidity Events:",liquidity_events)
-    print("NFT Deployed:",nft_deploys)
+    print("Token Minted:", mint_count)
+    print("Token Deployed:", deploy_count)
+    print("Liquidity Events:", liquidity_count)
 
 
 def main():
 
-    latest_block = w3.eth.block_number
-
-    current_block = latest_block - 1
-
-    print("Starting near latest block:",current_block)
+    last_block = w3.eth.block_number - 1
 
     while True:
 
-        latest_block = w3.eth.block_number
+        try:
 
-        if current_block <= latest_block:
+            latest_block = w3.eth.block_number
 
-            scan_block(current_block)
+            if latest_block > last_block:
 
-            current_block += 1
+                for block in range(last_block + 1, latest_block + 1):
 
-        else:
+                    scan_block(block)
 
-            time.sleep(1)
+                last_block = latest_block
+
+        except:
+            pass
+
+        time.sleep(1)
 
 
 if __name__ == "__main__":
