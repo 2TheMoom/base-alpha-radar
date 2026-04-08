@@ -1,56 +1,38 @@
+import os
+import sys
 import time
-from web3 import Web3
 from datetime import datetime
+from web3 import Web3
+from dotenv import load_dotenv
 
-RPC_URL = "https://mainnet.base.org"
+# Add project root to Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
+from app.events.event_queue import push_event
+from detectors.stealth_launch import run_detector
+
+
+load_dotenv()
+
+RPC = os.getenv("BASE_RPC_URL")
+
+w3 = Web3(Web3.HTTPProvider(RPC))
 
 print("Connected to Base RPC")
 
+
 TRANSFER_TOPIC = w3.keccak(text="Transfer(address,address,uint256)").hex()
-
-ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-
-DEX_ROUTERS = {
-    "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86": "Uniswap",
-    "0xcF77a3Ba9A5CA399B7c97c74d54e5b1b9E36FfC9": "Aerodrome"
-}
+APPROVAL_TOPIC = w3.keccak(text="Approval(address,address,uint256)").hex()
 
 
-def safe_rpc(fn):
-    try:
-        return fn()
-    except:
-        return None
+def get_timestamp(block):
+
+    ts = block["timestamp"]
+
+    return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_token_metadata(address):
-
-    abi = [
-        {"constant":True,"inputs":[],"name":"name","outputs":[{"type":"string"}],"type":"function"},
-        {"constant":True,"inputs":[],"name":"symbol","outputs":[{"type":"string"}],"type":"function"},
-        {"constant":True,"inputs":[],"name":"totalSupply","outputs":[{"type":"uint256"}],"type":"function"}
-    ]
-
-    try:
-
-        contract = w3.eth.contract(address=address, abi=abi)
-
-        name = safe_rpc(lambda: contract.functions.name().call())
-        symbol = safe_rpc(lambda: contract.functions.symbol().call())
-        supply = safe_rpc(lambda: contract.functions.totalSupply().call())
-
-        return name or "Unknown", symbol or "Unknown", supply or 0
-
-    except:
-        return "Unknown","Unknown",0
-
-
-def detect_token_mint(log, timestamp):
-
-    if "topics" not in log:
-        return False
+def detect_token_mint(log, timestamp, block_number):
 
     if len(log["topics"]) == 0:
         return False
@@ -63,138 +45,119 @@ def detect_token_mint(log, timestamp):
 
     from_addr = "0x" + log["topics"][1].hex()[-40:]
 
-    if from_addr.lower() != ZERO_ADDRESS:
+    if from_addr != "0x0000000000000000000000000000000000000000":
         return False
 
-    token = log["address"]
-
-    name, symbol, supply = get_token_metadata(token)
-
-    # ---------- NFT MINT ----------
-    if len(log["topics"]) == 4:
-
-        try:
-            token_id = int(log["topics"][3].hex(), 16)
-        except:
-            token_id = 0
-
-        print("\n🖼 NFT Mint Detected")
-        print("Time:", timestamp)
-        print("Name:", name)
-        print("Symbol:", symbol)
-        print("Token ID:", token_id)
-        print("Contract:", token)
-
-        return True
-
-
-    # ---------- ERC20 MINT ----------
-    amount = 0
+    contract = log["address"]
 
     try:
-        if log["data"] != "0x":
-            amount = int(log["data"], 16)
+        amount = int(log["data"], 16)
     except:
         amount = 0
 
-    print("\n🔥 Token Mint Detected")
-    print("Time:", timestamp)
-    print("Name:", name)
-    print("Symbol:", symbol)
-    print("Mint Amount:", amount)
-    print("Total Supply:", supply)
-    print("Contract:", token)
+    event_data = {
+        "contract": contract,
+        "amount": amount,
+        "block": block_number,
+        "timestamp": timestamp
+    }
+
+    push_event("mint", event_data)
 
     return True
 
 
-def detect_liquidity(tx, timestamp):
-
-    if tx["to"] is None:
-        return False
-
-    if tx["to"].lower() not in [x.lower() for x in DEX_ROUTERS]:
-        return False
-
-    dex = DEX_ROUTERS[tx["to"]]
-
-    print("\n💧 Liquidity Event")
-    print("Time:", timestamp)
-    print("DEX:", dex)
-    print("Tx:", tx["hash"].hex())
-
-    return True
-
-
-def detect_contract_deploy(receipt, timestamp):
+def detect_contract_deploy(tx, receipt, timestamp, block_number):
 
     if receipt["contractAddress"] is None:
         return False
 
     contract = receipt["contractAddress"]
 
-    name, symbol, supply = get_token_metadata(contract)
+    event_data = {
+        "contract": contract,
+        "block": block_number,
+        "timestamp": timestamp
+    }
 
-    if name == "Unknown" and symbol == "Unknown":
-        return False
-
-    print("\n🚀 Token Deployed")
-    print("Time:", timestamp)
-    print("Name:", name)
-    print("Symbol:", symbol)
-    print("Total Supply:", supply)
-    print("Contract:", contract)
+    push_event("deploy", event_data)
 
     return True
 
 
+def detect_liquidity_event(log, timestamp, block_number):
+
+    if len(log["topics"]) == 0:
+        return False
+
+    topic = log["topics"][0].hex()
+
+    # simple heuristic detection
+    if "swap" in topic.lower():
+
+        event_data = {
+            "dex": "DEX",
+            "block": block_number,
+            "timestamp": timestamp
+        }
+
+        push_event("liquidity", event_data)
+
+        return True
+
+    return False
+
+
 def scan_block(block_number):
 
-    block = safe_rpc(lambda: w3.eth.get_block(block_number, full_transactions=True))
+    try:
 
-    if block is None:
-        return
+        block = w3.eth.get_block(block_number, full_transactions=True)
 
-    timestamp = datetime.utcfromtimestamp(block["timestamp"])
+        timestamp = get_timestamp(block)
 
-    print(f"\nScanning block {block_number} | {timestamp}")
+        print(f"\nScanning block {block_number} | {timestamp}")
 
-    mint_count = 0
-    deploy_count = 0
-    liquidity_count = 0
-
-    for tx in block["transactions"]:
-
-        receipt = safe_rpc(lambda: w3.eth.get_transaction_receipt(tx["hash"]))
-
-        if receipt is None:
-            continue
-
-        if detect_contract_deploy(receipt, timestamp):
-            deploy_count += 1
-
-        if detect_liquidity(tx, timestamp):
-            liquidity_count += 1
-
-        for log in receipt["logs"]:
+        for tx in block["transactions"]:
 
             try:
 
-                if detect_token_mint(log, timestamp):
-                    mint_count += 1
+                receipt = w3.eth.get_transaction_receipt(tx["hash"])
 
-            except:
+                detect_contract_deploy(tx, receipt, timestamp, block_number)
+
+                for log in receipt["logs"]:
+
+                    detect_token_mint(log, timestamp, block_number)
+
+                    detect_liquidity_event(log, timestamp, block_number)
+
+            except Exception:
                 continue
 
-    print("\n📊 Block Summary")
-    print("Token Minted:", mint_count)
-    print("Token Deployed:", deploy_count)
-    print("Liquidity Events:", liquidity_count)
+    except Exception as e:
+
+        print("Block scan error:", e)
+
+
+def get_last_block():
+
+    if not os.path.exists("last_block.txt"):
+        return w3.eth.block_number - 1
+
+    with open("last_block.txt", "r") as f:
+        return int(f.read().strip())
+
+
+def save_last_block(block):
+
+    with open("last_block.txt", "w") as f:
+        f.write(str(block))
 
 
 def main():
 
-    last_block = w3.eth.block_number - 1
+    last_block = get_last_block()
 
     while True:
 
@@ -208,12 +171,20 @@ def main():
 
                     scan_block(block)
 
-                last_block = latest_block
+                    last_block = block
 
-        except:
-            pass
+                    save_last_block(last_block)
 
-        time.sleep(1)
+            # Run detectors on queued events
+            run_detector()
+
+            time.sleep(1)
+
+        except Exception as e:
+
+            print("Scanner error:", e)
+
+            time.sleep(5)
 
 
 if __name__ == "__main__":
