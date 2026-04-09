@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-rpc = os.getenv("BASE_RPC")
+rpc = os.getenv("BASE_RPC_URL")
 
 w3 = Web3(Web3.HTTPProvider(rpc))
 
