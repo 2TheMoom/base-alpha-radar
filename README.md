@@ -1,105 +1,57 @@
 # Base Alpha Radar
 
-Base Alpha Radar is an open on-chain intelligence engine that tracks new tokens, liquidity events, and emerging activity on the Base network in near real time.
+Base Alpha Radar is a lightweight on-chain scanner that detects newly tradable tokens on the Base network.
 
-The goal of this project is to create an open analytics layer for discovering new tokens, stealth launches, and ecosystem signals before they appear on traditional dashboards.
-
----
-
-# Vision
-
-Base Alpha Radar aims to become a public intelligence layer for the Base ecosystem by providing open data on:
-
-- new token deployments
-- liquidity creation
-- deployer activity
-- stealth launches
-- smart money behavior
-
-This project is designed to support both **builders and traders** by providing early signals directly from on-chain activity.
+It monitors DEX factories, identifies new trading pairs, and tracks when liquidity is added and the first buy occurs.
 
 ---
 
-# Features
+## Features
 
-Current capabilities include:
-
-- Detect newly deployed ERC-20 tokens
-- Detect NFT mint events
-- Detect liquidity activity on major Base DEXs
-- Track contract deployments
-- Near-real-time block scanning
-- Event-driven architecture for scalable detectors
-
-Upcoming features:
-
-- 🚨 Stealth launch detection  
-- 💧 New liquidity pair detection  
-- 🐳 Whale wallet tracking  
-- 🔥 Early token discovery signals  
-- Dashboard integration with Olumi
+- Tracks major Base DEX factories
+- Detects new token pairs
+- Filters pairs involving WETH and USDC
+- Fetches token name and symbol
+- Detects liquidity added
+- Detects first buy transactions
 
 ---
 
-# Architecture
+## Architecture
 
-Base Alpha Radar follows a modular event-driven architecture:
+DEX Factory → PairCreated Event
 
-Scanner Layer
-↓
-Event Queue Layer
-↓
-Processing Layer
-↓
-Storage / Alert Layer
-
-
-### Scanner Layer
-Continuously scans new blocks on Base and extracts on-chain events such as:
-
-- token deployments
-- mint events
-- liquidity activity
-
-### Event Queue Layer
-Acts as a buffer between the scanner and detectors, allowing multiple analytics modules to process events in parallel.
-
-### Processing Layer
-Runs detection algorithms such as:
-
-- stealth launch detection
-- liquidity pattern detection
-- whale activity detection
-
-### Storage / Alert Layer
-Stores insights and powers dashboards, alerts, and APIs.
+LP Contract Monitoring:
+- Mint → Liquidity Added
+- Swap → First Buy
 
 ---
 
-# Project Structure
-base-alpha-radar/
-│
-├── app/
-│ ├── scanner.py # Blockchain event scanner
-│ ├── server.py # API server
-│ ├── status.py # Health/status endpoint
-│ │
-│ └── events/
-│ └── event_queue.py
-│
-├── detectors/
-│ └── stealth_launch.py # Launch pattern detector (coming next)
-│
-├── init_db.py
-├── contracts.db
-├── last_block.txt
-│
-├── check_tokens.py
-├── check_db.py
-│
-└── README.md
+## Project Structure
 
-## Setup
+base-alpha-radar
+ app/
+ scanner/
+  dex_listener.py
+
+config/
+ dex_factories.py
+
+detectors/
+ liquidity_detector.py
+ stealth_launch.py
+
+events/
+ event_queue.py
+
+
+---
+
+## Run the Radar
+ python -m app.scanner.dex_listener
+ 
+
+ ## Setup
 
 Clone the repository:
 
@@ -148,27 +100,25 @@ python app/server.py
 
 ---
 
-# Roadmap
+## Current Development
 
-Short-term roadmap:
+Milestone 1
+DEX Factory Scanner ✅
 
-1. Event Queue Layer  
-2. Stealth Launch Detector  
-3. Liquidity Pair Detection  
-4. Whale Wallet Tracking  
-5. Alpha Dashboard
+Milestone 2
+Liquidity Detection 🚧
 
-Long-term vision:
+Milestone 3
+First Buy Detection 🚧
 
-Base Alpha Radar becomes an open **Base ecosystem intelligence platform** that powers:
+Milestone 4
+Liquidity Size Filtering
 
-- token discovery
-- trading signals
-- developer analytics
-- ecosystem dashboards
+Milestone 5
+Multi-chain Support
 
 ---
 
-# License
+## Goal
 
-MIT License
+Detect newly tradable tokens on Base in near-real-time.
