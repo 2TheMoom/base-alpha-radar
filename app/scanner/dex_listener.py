@@ -1,76 +1,68 @@
 import os
 import time
 from datetime import datetime
+
 from web3 import Web3
 from dotenv import load_dotenv
 
 from app.config.dex_factories import DEX_FACTORIES
 
+
 load_dotenv()
 
-RPC_URL = os.getenv("BASE_RPC_URL")
+RPC = os.getenv("BASE_RPC_URL")
 
-w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 30}))
+w3 = Web3(Web3.LegacyWebSocketProvider(RPC))
 
-if not w3.is_connected():
-    print("Failed to connect to Base RPC")
-    exit()
-
-print("Connected to Base RPC")
+print("Connected to Base WebSocket RPC")
+print("Starting Base Alpha Radar")
 
 
-# -------------------------------------------------
-# BASE TOKENS WE CARE ABOUT
-# -------------------------------------------------
+# Base tokens
+WETH = Web3.to_checksum_address(
+    "0x4200000000000000000000000000000000000006"
+)
 
-WETH = Web3.to_checksum_address("0x4200000000000000000000000000000000000006")
+USDC = Web3.to_checksum_address(
+    "0xd9aAEc86B65D86f6A7B5A7F9F1FfE9A2c1b9C2eA"
+)
 
-USDC = Web3.to_checksum_address("0xd9aAEc86B65D86f6A7B5A7F9F1FfE9A2c1b9C2eA")
-
-VALID_BASE_TOKENS = {WETH, USDC}
+VALID_BASE = {WETH, USDC}
 
 
-# -------------------------------------------------
-# EVENT SIGNATURES
-# -------------------------------------------------
-
-PAIR_CREATED_TOPIC = w3.keccak(
+# Event signatures
+PAIR_CREATED = w3.keccak(
     text="PairCreated(address,address,address,uint256)"
 ).hex()
 
-MINT_TOPIC = w3.keccak(
+MINT = w3.keccak(
     text="Mint(address,uint256,uint256)"
 ).hex()
 
-SWAP_TOPIC = w3.keccak(
+SWAP = w3.keccak(
     text="Swap(address,uint256,uint256,uint256,uint256,address)"
 ).hex()
 
 
-# -------------------------------------------------
-# TRACKED POOLS
-# -------------------------------------------------
+tracked_pairs = {}
 
-tracked_pools = {}
-
-
-# -------------------------------------------------
-# HELPERS
-# -------------------------------------------------
 
 def now():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def topic_to_address(topic):
-    return Web3.to_checksum_address("0x" + topic.hex()[-40:])
+
+    return Web3.to_checksum_address(
+        "0x" + topic.hex()[-40:]
+    )
 
 
-def extract_pair_address(data):
+def extract_pair(data):
 
-    hex_data = data.hex()
+    raw = data.hex()
 
-    pair = "0x" + hex_data[26:66]
+    pair = "0x" + raw[26:66]
 
     return Web3.to_checksum_address(pair)
 
@@ -99,87 +91,147 @@ def get_token_metadata(token):
         contract = w3.eth.contract(address=token, abi=abi)
 
         name = contract.functions.name().call()
+
         symbol = contract.functions.symbol().call()
 
         return name, symbol
 
     except:
-        return None, None
+
+        return "Unknown", "UNK"
 
 
-# -------------------------------------------------
-# HANDLE NEW PAIR
-# -------------------------------------------------
-
-def handle_pair_created(log):
+def detect_pair(log):
 
     token0 = topic_to_address(log["topics"][1])
     token1 = topic_to_address(log["topics"][2])
 
-    pair = extract_pair_address(log["data"])
+    pair = extract_pair(log["data"])
 
-    if token0 not in VALID_BASE_TOKENS and token1 not in VALID_BASE_TOKENS:
+    factory = log["address"]
+
+    dex = "Unknown"
+
+    for name, addr in DEX_FACTORIES.items():
+
+        if addr.lower() == factory.lower():
+
+            dex = name
+
+
+    if token0 in VALID_BASE:
+
+        base = token0
+        token = token1
+
+    elif token1 in VALID_BASE:
+
+        base = token1
+        token = token0
+
+    else:
+
         return
 
-    name0, sym0 = get_token_metadata(token0)
-    name1, sym1 = get_token_metadata(token1)
 
-    print("\n🚨 NEW TRADABLE TOKEN DETECTED")
-    print("Time:", now())
-    print("Token0:", name0, sym0)
-    print("Token1:", name1, sym1)
-    print("Pair:", pair)
+    name, symbol = get_token_metadata(token)
 
-    tracked_pools[pair] = {
-        "token0": token0,
-        "token1": token1,
-        "liquidity": False,
+    creator = w3.eth.get_transaction(
+        log["transactionHash"]
+    )["from"]
+
+
+    tracked_pairs[pair] = {
+
+        "token": token,
+        "name": name,
+        "symbol": symbol,
+        "base": base,
+        "dex": dex,
+        "creator": creator,
+        "liquidity": 0,
         "first_buy": False,
+
     }
 
 
-# -------------------------------------------------
-# LIQUIDITY DETECTION
-# -------------------------------------------------
+def detect_liquidity(pair, log):
 
-def detect_liquidity(pair):
+    tx = w3.eth.get_transaction(
+        log["transactionHash"]
+    )
 
-    if tracked_pools[pair]["liquidity"]:
+    eth_value = w3.from_wei(tx["value"], "ether")
+
+    if eth_value == 0:
+
         return
 
-    print("\n💧 LIQUIDITY ADDED")
-    print("Pair:", pair)
 
-    tracked_pools[pair]["liquidity"] = True
+    tracked_pairs[pair]["liquidity"] = eth_value
+
+    data = tracked_pairs[pair]
+
+    base_symbol = "WETH" if data["base"] == WETH else "USDC"
 
 
-# -------------------------------------------------
-# FIRST BUY DETECTION
-# -------------------------------------------------
+    print("\n🚨 NEW TOKEN LAUNCH\n")
 
-def detect_first_buy(pair):
+    print("Time:", now())
+    print()
 
-    if tracked_pools[pair]["first_buy"]:
+    print("Token:", data["name"], f"({data['symbol']})")
+    print("Contract:", data["token"])
+    print()
+
+    print("DEX:", data["dex"])
+    print()
+
+    print("Base Pair:", base_symbol)
+    print("Pair Address:", pair)
+    print()
+
+    print("Creator Wallet:", data["creator"])
+    print()
+
+    print("Liquidity Added:", eth_value, base_symbol)
+
+
+def detect_swap(pair):
+
+    data = tracked_pairs[pair]
+
+    if data["first_buy"]:
+
         return
 
-    print("\n🐳 FIRST BUY DETECTED")
-    print("Pair:", pair)
+    if data["liquidity"] == 0:
 
-    tracked_pools[pair]["first_buy"] = True
+        return
 
 
-# -------------------------------------------------
-# MAIN LOOP
-# -------------------------------------------------
+    print()
+    print("First Buy Detected")
+    print()
+    print("🔥 ALPHA SIGNAL 🔥")
+    print()
+
+
+    tracked_pairs[pair]["first_buy"] = True
+
 
 def main():
 
-    print("Starting Base Alpha Radar")
-
     pair_filter = w3.eth.filter({
+
         "address": list(DEX_FACTORIES.values()),
-        "topics": [PAIR_CREATED_TOPIC]
+        "topics": [PAIR_CREATED],
+
     })
+
+
+    print("Listening for new pools...\n")
+
 
     while True:
 
@@ -188,13 +240,18 @@ def main():
             logs = pair_filter.get_new_entries()
 
             for log in logs:
-                handle_pair_created(log)
 
-            for pair in list(tracked_pools.keys()):
+                detect_pair(log)
+
+
+            for pair in list(tracked_pairs.keys()):
 
                 pool_filter = w3.eth.filter({
+
                     "address": pair
+
                 })
+
 
                 pool_logs = pool_filter.get_new_entries()
 
@@ -202,19 +259,24 @@ def main():
 
                     topic = log["topics"][0].hex()
 
-                    if topic == MINT_TOPIC:
-                        detect_liquidity(pair)
+                    if topic == MINT:
 
-                    elif topic == SWAP_TOPIC:
-                        detect_first_buy(pair)
+                        detect_liquidity(pair, log)
+
+                    elif topic == SWAP:
+
+                        detect_swap(pair)
+
 
             time.sleep(2)
 
         except Exception as e:
 
             print("Radar error:", e)
+
             time.sleep(5)
 
 
 if __name__ == "__main__":
+
     main()
