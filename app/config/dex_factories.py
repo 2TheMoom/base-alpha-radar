@@ -1,23 +1,29 @@
+from web3 import Web3
+
 DEX_FACTORIES = {
 
-    # Aerodrome
-    "Aerodrome V2": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da",
-    "Aerodrome Slipstream": "0x5e7BB104d84b7CB9B682aac2f3d509f5F406809A",
+    "Aerodrome V2":
+    Web3.to_checksum_address("0x420dd381b31aef6683db6b902084cb0ffece40da"),
 
-    # Uniswap
-    "Uniswap V2": "0x8909Dc15e40173fF4699343b6eb8132c65e18eC6",
-    "Uniswap V3": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+    "Aerodrome Slipstream":
+    Web3.to_checksum_address("0x5e7bb104d84b7cb9b682aac2f3d509f5f406809a"),
 
-    # BaseSwap
-    "BaseSwap V2": "0xFDa619b6d20975be80a10332cB5c0f9d2c4B0A7b",
+    "Uniswap V2":
+    Web3.to_checksum_address("0x8909dc15e40173ff4699343b6eb8132c65e18ec6"),
 
-    # AlienBase
-    "AlienBase V2": "0x8e8F3C8c0cAA7f9d3eF59e9bEdcF1B0c6f6d8d0f",
+    "Uniswap V3":
+    Web3.to_checksum_address("0x33128a8fc17869897dce68ed026d694621f6fdfd"),
 
-    # Sushi
-    "SushiSwap V2": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+    "BaseSwap V2":
+    Web3.to_checksum_address("0xfda619b6d20975be80a10332cb5c0f9d2c4b0a7b"),
 
-    # Pancake
-    "PancakeSwap V3": "0x0BFbCF9fa4f9C56B0F40aFfF7F6F3E6F6D2C7e5A"
+    "AlienBase V2":
+    Web3.to_checksum_address("0x8e8f3c8c0caa7f9d3ef59e9bedcf1b0c6f6d8d0f"),
+
+    "SushiSwap V2":
+    Web3.to_checksum_address("0xc35dadb65012ec5796536bd9864ed8773abc74c4"),
+
+    "PancakeSwap V3":
+    Web3.to_checksum_address("0x0bfbcf9fa4f9c56b0f40afff7f6f3e6f6d2c7e5a")
 
 }
