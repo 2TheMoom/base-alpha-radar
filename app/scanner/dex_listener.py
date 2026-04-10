@@ -1,73 +1,38 @@
 import os
 import time
 from datetime import datetime
-
 from web3 import Web3
 from dotenv import load_dotenv
 
 from app.config.dex_factories import DEX_FACTORIES
 
-
 load_dotenv()
 
-RPC = os.getenv("BASE_RPC_URL")
+RPC = os.getenv("BASE_RPC")
 
-w3 = Web3(Web3.LegacyWebSocketProvider(RPC))
+w3 = Web3(Web3.HTTPProvider(RPC))
 
-print("Connected to Base WebSocket RPC")
+if not w3.is_connected():
+    print("Failed to connect to RPC")
+    exit()
+
+print("Connected to Base HTTP RPC")
 print("Starting Base Alpha Radar")
+print("Scanning blocks...")
 
+# Major base tokens
+BASE_TOKENS = [
+    Web3.to_checksum_address("0x4200000000000000000000000000000000000006"), # WETH
+    Web3.to_checksum_address("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"), # USDC
+    Web3.to_checksum_address("0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca"), # USDbC
+]
 
-# Base tokens
-WETH = Web3.to_checksum_address(
-    "0x4200000000000000000000000000000000000006"
-)
-
-USDC = Web3.to_checksum_address(
-    "0xd9aAEc86B65D86f6A7B5A7F9F1FfE9A2c1b9C2eA"
-)
-
-VALID_BASE = {WETH, USDC}
-
-
-# Event signatures
-PAIR_CREATED = w3.keccak(
+PAIR_CREATED_TOPIC = w3.keccak(
     text="PairCreated(address,address,address,uint256)"
 ).hex()
 
-MINT = w3.keccak(
-    text="Mint(address,uint256,uint256)"
-).hex()
 
-SWAP = w3.keccak(
-    text="Swap(address,uint256,uint256,uint256,uint256,address)"
-).hex()
-
-
-tracked_pairs = {}
-
-
-def now():
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def topic_to_address(topic):
-
-    return Web3.to_checksum_address(
-        "0x" + topic.hex()[-40:]
-    )
-
-
-def extract_pair(data):
-
-    raw = data.hex()
-
-    pair = "0x" + raw[26:66]
-
-    return Web3.to_checksum_address(pair)
-
-
-def get_token_metadata(token):
+def get_token_info(token):
 
     abi = [
         {
@@ -86,197 +51,79 @@ def get_token_metadata(token):
         },
     ]
 
+    contract = w3.eth.contract(address=token, abi=abi)
+
     try:
-
-        contract = w3.eth.contract(address=token, abi=abi)
-
         name = contract.functions.name().call()
-
-        symbol = contract.functions.symbol().call()
-
-        return name, symbol
-
     except:
+        name = "Unknown"
 
-        return "Unknown", "UNK"
+    try:
+        symbol = contract.functions.symbol().call()
+    except:
+        symbol = "UNK"
 
-
-def detect_pair(log):
-
-    token0 = topic_to_address(log["topics"][1])
-    token1 = topic_to_address(log["topics"][2])
-
-    pair = extract_pair(log["data"])
-
-    factory = log["address"]
-
-    dex = "Unknown"
-
-    for name, addr in DEX_FACTORIES.items():
-
-        if addr.lower() == factory.lower():
-
-            dex = name
-
-
-    if token0 in VALID_BASE:
-
-        base = token0
-        token = token1
-
-    elif token1 in VALID_BASE:
-
-        base = token1
-        token = token0
-
-    else:
-
-        return
-
-
-    name, symbol = get_token_metadata(token)
-
-    creator = w3.eth.get_transaction(
-        log["transactionHash"]
-    )["from"]
-
-
-    tracked_pairs[pair] = {
-
-        "token": token,
-        "name": name,
-        "symbol": symbol,
-        "base": base,
-        "dex": dex,
-        "creator": creator,
-        "liquidity": 0,
-        "first_buy": False,
-
-    }
-
-
-def detect_liquidity(pair, log):
-
-    tx = w3.eth.get_transaction(
-        log["transactionHash"]
-    )
-
-    eth_value = w3.from_wei(tx["value"], "ether")
-
-    if eth_value == 0:
-
-        return
-
-
-    tracked_pairs[pair]["liquidity"] = eth_value
-
-    data = tracked_pairs[pair]
-
-    base_symbol = "WETH" if data["base"] == WETH else "USDC"
-
-
-    print("\n🚨 NEW TOKEN LAUNCH\n")
-
-    print("Time:", now())
-    print()
-
-    print("Token:", data["name"], f"({data['symbol']})")
-    print("Contract:", data["token"])
-    print()
-
-    print("DEX:", data["dex"])
-    print()
-
-    print("Base Pair:", base_symbol)
-    print("Pair Address:", pair)
-    print()
-
-    print("Creator Wallet:", data["creator"])
-    print()
-
-    print("Liquidity Added:", eth_value, base_symbol)
-
-
-def detect_swap(pair):
-
-    data = tracked_pairs[pair]
-
-    if data["first_buy"]:
-
-        return
-
-    if data["liquidity"] == 0:
-
-        return
-
-
-    print()
-    print("First Buy Detected")
-    print()
-    print("🔥 ALPHA SIGNAL 🔥")
-    print()
-
-
-    tracked_pairs[pair]["first_buy"] = True
+    return name, symbol
 
 
 def main():
 
-    pair_filter = w3.eth.filter({
-
-        "address": list(DEX_FACTORIES.values()),
-        "topics": [PAIR_CREATED],
-
-    })
-
-
-    print("Listening for new pools...\n")
-
+    last_block = w3.eth.block_number
 
     while True:
 
-        try:
+        latest_block = w3.eth.block_number
 
-            logs = pair_filter.get_new_entries()
+        if latest_block > last_block:
+
+            logs = w3.eth.get_logs({
+                "fromBlock": last_block,
+                "toBlock": latest_block,
+                "address": list(DEX_FACTORIES.values()),
+                "topics": [PAIR_CREATED_TOPIC],
+            })
 
             for log in logs:
 
-                detect_pair(log)
+                token0 = Web3.to_checksum_address(
+                    "0x" + log["topics"][1].hex()[-40:]
+                )
 
+                token1 = Web3.to_checksum_address(
+                    "0x" + log["topics"][2].hex()[-40:]
+                )
 
-            for pair in list(tracked_pairs.keys()):
+                if token0 not in BASE_TOKENS and token1 not in BASE_TOKENS:
+                    continue
 
-                pool_filter = w3.eth.filter({
+                pair = Web3.to_checksum_address(
+                    "0x" + log["data"].hex()[26:66]
+                )
 
-                    "address": pair
+                token = token1 if token0 in BASE_TOKENS else token0
 
-                })
+                name, symbol = get_token_info(token)
 
+                dex_name = "Unknown"
 
-                pool_logs = pool_filter.get_new_entries()
+                for dex, addr in DEX_FACTORIES.items():
+                    if addr.lower() == log["address"].lower():
+                        dex_name = dex
+                        break
 
-                for log in pool_logs:
+                print("\n🚨 NEW TRADABLE TOKEN DETECTED\n")
+                print("Time:", datetime.utcnow())
+                print("Token:", name, f"({symbol})")
+                print("Contract:", token)
+                print("DEX:", dex_name)
+                print("Pair Address:", pair)
+                print("Base Token: WETH / USDC")
+                print("\n🔥 ALPHA SIGNAL\n")
 
-                    topic = log["topics"][0].hex()
+            last_block = latest_block
 
-                    if topic == MINT:
-
-                        detect_liquidity(pair, log)
-
-                    elif topic == SWAP:
-
-                        detect_swap(pair)
-
-
-            time.sleep(2)
-
-        except Exception as e:
-
-            print("Radar error:", e)
-
-            time.sleep(5)
+        time.sleep(3)
 
 
 if __name__ == "__main__":
-
     main()

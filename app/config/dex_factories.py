@@ -14,14 +14,14 @@ DEX_FACTORIES = {
     "Uniswap V3":
     Web3.to_checksum_address("0x33128a8fc17869897dce68ed026d694621f6fdfd"),
 
-    "BaseSwap V2":
+    "SushiSwap":
+    Web3.to_checksum_address("0xc35dadb65012ec5796536bd9864ed8773abc74c4"),
+
+    "BaseSwap":
     Web3.to_checksum_address("0xfda619b6d20975be80a10332cb5c0f9d2c4b0a7b"),
 
-    "AlienBase V2":
+    "AlienBase":
     Web3.to_checksum_address("0x8e8f3c8c0caa7f9d3ef59e9bedcf1b0c6f6d8d0f"),
-
-    "SushiSwap V2":
-    Web3.to_checksum_address("0xc35dadb65012ec5796536bd9864ed8773abc74c4"),
 
     "PancakeSwap V3":
     Web3.to_checksum_address("0x0bfbcf9fa4f9c56b0f40afff7f6f3e6f6d2c7e5a")
