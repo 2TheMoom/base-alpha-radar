@@ -209,3 +209,5 @@ __marimo__/
 # Base Alpha Radar runtime files
 contracts.db
 last_block.txt
+.env
+radar.db
