@@ -1,11 +1,17 @@
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from web3 import Web3
 from dotenv import load_dotenv
 
 from app.config.dex_factories import DEX_FACTORIES
+from app.analysis.liquidity_lock import check_liquidity_lock
+from app.analysis.rug_risk import calculate_rug_risk
+from app.analysis.holder_distribution import analyze_distribution
+from app.analysis.buy_tracker import track_first_buys
+from app.alerts.telegram_bot import send_alert
+from app.database.db import save_launch
 
 
 load_dotenv()
@@ -15,18 +21,28 @@ RPC = os.getenv("BASE_RPC")
 w3 = Web3(Web3.HTTPProvider(RPC))
 
 if not w3.is_connected():
-    print("Failed to connect to RPC")
+    print("❌ Failed to connect to RPC")
     exit()
 
-print("Connected to Base HTTP RPC")
-print("Starting Base Alpha Radar")
-print("Scanning blocks...")
+print("✅ Connected to Base RPC")
+print("🚀 Base Alpha Radar started")
+print("Scanning blocks...\n")
 
 
 BASE_TOKENS = {
-    Web3.to_checksum_address("0x4200000000000000000000000000000000000006"): "WETH",
-    Web3.to_checksum_address("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"): "USDC",
-    Web3.to_checksum_address("0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca"): "USDbC",
+
+    Web3.to_checksum_address(
+        "0x4200000000000000000000000000000000000006"
+    ): "WETH",
+
+    Web3.to_checksum_address(
+        "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+    ): "USDC",
+
+    Web3.to_checksum_address(
+        "0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca"
+    ): "USDbC",
+
 }
 
 
@@ -35,12 +51,13 @@ PAIR_CREATED_TOPIC = w3.keccak(
 ).hex()
 
 
-MIN_LIQUIDITY = 1 * 10**18   # 1 WETH minimum
+MIN_LIQUIDITY = 1 * 10**18
 
 
 def get_token_info(token):
 
     abi = [
+
         {
             "name": "name",
             "outputs": [{"type": "string"}],
@@ -48,6 +65,7 @@ def get_token_info(token):
             "stateMutability": "view",
             "type": "function",
         },
+
         {
             "name": "symbol",
             "outputs": [{"type": "string"}],
@@ -55,6 +73,7 @@ def get_token_info(token):
             "stateMutability": "view",
             "type": "function",
         },
+
     ]
 
     contract = w3.eth.contract(address=token, abi=abi)
@@ -75,6 +94,7 @@ def get_token_info(token):
 def get_liquidity(pair):
 
     abi = [
+
         {
             "name": "getReserves",
             "outputs": [
@@ -86,9 +106,11 @@ def get_liquidity(pair):
             "stateMutability": "view",
             "type": "function",
         }
+
     ]
 
     try:
+
         contract = w3.eth.contract(address=pair, abi=abi)
 
         reserves = contract.functions.getReserves().call()
@@ -110,10 +132,12 @@ def main():
         if latest_block > last_block:
 
             logs = w3.eth.get_logs({
+
                 "fromBlock": last_block,
                 "toBlock": latest_block,
                 "address": list(DEX_FACTORIES.values()),
                 "topics": [PAIR_CREATED_TOPIC],
+
             })
 
             for log in logs:
@@ -144,19 +168,17 @@ def main():
 
                 reserves = get_liquidity(pair)
 
-                if reserves:
+                if not reserves:
+                    continue
 
-                    reserve0, reserve1, _ = reserves
+                reserve0, reserve1, _ = reserves
 
-                    liquidity = reserve0 if token0 in BASE_TOKENS else reserve1
+                liquidity = reserve0 if token0 in BASE_TOKENS else reserve1
 
-                    if liquidity < MIN_LIQUIDITY:
-                        continue
+                if liquidity < MIN_LIQUIDITY:
+                    continue
 
-                    liquidity_eth = liquidity / 10**18
-
-                else:
-                    liquidity_eth = 0
+                liquidity_eth = liquidity / 10**18
 
 
                 tx = w3.eth.get_transaction(log["transactionHash"])
@@ -168,28 +190,74 @@ def main():
                 for dex, addr in DEX_FACTORIES.items():
 
                     if addr.lower() == log["address"].lower():
-
                         dex_name = dex
                         break
 
 
-                print("\n🚨 NEW TRADABLE TOKEN DETECTED\n")
+                liquidity_lock = check_liquidity_lock(pair)
 
-                print("Time:", datetime.utcnow())
-                print("Token:", name, f"({symbol})")
-                print("Contract:", token)
+                distribution = analyze_distribution(token)
 
-                print("DEX:", dex_name)
+                rug_risk = calculate_rug_risk(
+                    creator,
+                    liquidity_lock,
+                    distribution,
+                )
 
-                print("Pair Address:", pair)
 
-                print("Base Token:", BASE_TOKENS[base_token])
+                message = f"""
+🚨 NEW TOKEN DETECTED
 
-                print("Liquidity:", round(liquidity_eth, 4), BASE_TOKENS[base_token])
+Token: {name} ({symbol})
 
-                print("Creator:", creator)
+Contract:
+{token}
 
-                print("\n🔥 ALPHA SIGNAL\n")
+Pair:
+{pair}
+
+DEX:
+{dex_name}
+
+Creator:
+{creator}
+
+Liquidity:
+{round(liquidity_eth,4)} {BASE_TOKENS[base_token]}
+
+Liquidity Lock:
+{liquidity_lock}
+
+Rug Risk:
+{rug_risk}
+"""
+
+
+                print(message)
+
+                send_alert(message)
+
+
+                save_launch(
+
+                    name,
+                    symbol,
+                    token,
+                    pair,
+                    creator,
+                    liquidity_eth,
+                    dex_name,
+                    rug_risk,
+
+                )
+
+
+                track_first_buys(
+                    w3,
+                    pair,
+                    BASE_TOKENS[base_token],
+                    send_alert,
+                )
 
 
             last_block = latest_block
